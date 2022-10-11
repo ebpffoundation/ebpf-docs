@@ -1,8 +1,11 @@
+.. contents::
+.. sectnum::
+
 =====================
 BPF Type Format (BTF)
 =====================
 
-1. Introduction
+Introduction
 ===============
 
 BTF (BPF Type Format) is the metadata format which encodes the debug info
@@ -29,7 +32,7 @@ sections are discussed in details in :ref:`BTF_Type_String`.
 
 .. _BTF_Type_String:
 
-2. BTF Type and String Encoding
+BTF Type and String Encoding
 ===============================
 
 The file ``include/uapi/linux/btf.h`` provides high-level definition of how
@@ -56,13 +59,13 @@ little-endian target. The ``btf_header`` is designed to be extensible with
 ``hdr_len`` equal to ``sizeof(struct btf_header)`` when a data blob is
 generated.
 
-2.1 String Encoding
+String Encoding
 -------------------
 
 The first string in the string section must be a null string. The rest of
 string table is a concatenation of other null-terminated strings.
 
-2.2 Type Encoding
+Type Encoding
 -----------------
 
 The type id ``0`` is reserved for ``void`` type. The type section is parsed
@@ -122,7 +125,7 @@ For certain kinds, the common data are followed by kind-specific data. The
 ``name_off`` in ``struct btf_type`` specifies the offset in the string table.
 The following sections detail encoding of each kind.
 
-2.2.1 BTF_KIND_INT
+BTF_KIND_INT
 ~~~~~~~~~~~~~~~~~~
 
 ``struct btf_type`` encoding requirement:
@@ -174,7 +177,7 @@ The original intention of ``BTF_INT_OFFSET()`` is to provide flexibility of
 bitfield encoding. Currently, both llvm and pahole generate
 ``BTF_INT_OFFSET() = 0`` for all int types.
 
-2.2.2 BTF_KIND_PTR
+BTF_KIND_PTR
 ~~~~~~~~~~~~~~~~~~
 
 ``struct btf_type`` encoding requirement:
@@ -186,7 +189,7 @@ bitfield encoding. Currently, both llvm and pahole generate
 
 No additional type data follow ``btf_type``.
 
-2.2.3 BTF_KIND_ARRAY
+BTF_KIND_ARRAY
 ~~~~~~~~~~~~~~~~~~~~
 
 ``struct btf_type`` encoding requirement:
@@ -229,9 +232,10 @@ where the whole array is dumped out so one-dimensional array is enough. As
 more BTF usage is explored, pahole and llvm can be changed to generate proper
 chained representation for multidimensional arrays.
 
-2.2.4 BTF_KIND_STRUCT
+BTF_KIND_STRUCT
 ~~~~~~~~~~~~~~~~~~~~~
-2.2.5 BTF_KIND_UNION
+
+BTF_KIND_UNION
 ~~~~~~~~~~~~~~~~~~~~
 
 ``struct btf_type`` encoding requirement:
@@ -277,7 +281,7 @@ modes exist:
 
   https://github.com/torvalds/linux/commit/9d5f9f701b1891466fb3dbb1806ad97716f95cc3#diff-fa650a64fdd3968396883d2fe8215ff3
 
-2.2.6 BTF_KIND_ENUM
+BTF_KIND_ENUM
 ~~~~~~~~~~~~~~~~~~~
 
 ``struct btf_type`` encoding requirement:
@@ -302,7 +306,7 @@ If the original enum value is signed and the size is less than 4,
 that value will be sign extended into 4 bytes. If the size is 8,
 the value will be truncated into 4 bytes.
 
-2.2.7 BTF_KIND_FWD
+BTF_KIND_FWD
 ~~~~~~~~~~~~~~~~~~
 
 ``struct btf_type`` encoding requirement:
@@ -314,7 +318,7 @@ the value will be truncated into 4 bytes.
 
 No additional type data follow ``btf_type``.
 
-2.2.8 BTF_KIND_TYPEDEF
+BTF_KIND_TYPEDEF
 ~~~~~~~~~~~~~~~~~~~~~~
 
 ``struct btf_type`` encoding requirement:
@@ -326,7 +330,7 @@ No additional type data follow ``btf_type``.
 
 No additional type data follow ``btf_type``.
 
-2.2.9 BTF_KIND_VOLATILE
+BTF_KIND_VOLATILE
 ~~~~~~~~~~~~~~~~~~~~~~~
 
 ``struct btf_type`` encoding requirement:
@@ -338,7 +342,7 @@ No additional type data follow ``btf_type``.
 
 No additional type data follow ``btf_type``.
 
-2.2.10 BTF_KIND_CONST
+BTF_KIND_CONST
 ~~~~~~~~~~~~~~~~~~~~~
 
 ``struct btf_type`` encoding requirement:
@@ -350,7 +354,7 @@ No additional type data follow ``btf_type``.
 
 No additional type data follow ``btf_type``.
 
-2.2.11 BTF_KIND_RESTRICT
+BTF_KIND_RESTRICT
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 ``struct btf_type`` encoding requirement:
@@ -362,7 +366,7 @@ No additional type data follow ``btf_type``.
 
 No additional type data follow ``btf_type``.
 
-2.2.12 BTF_KIND_FUNC
+BTF_KIND_FUNC
 ~~~~~~~~~~~~~~~~~~~~
 
 ``struct btf_type`` encoding requirement:
@@ -384,7 +388,7 @@ type. The BTF_KIND_FUNC may in turn be referenced by a func_info in the
 Currently, only linkage values of BTF_FUNC_STATIC and BTF_FUNC_GLOBAL are
 supported in the kernel.
 
-2.2.13 BTF_KIND_FUNC_PROTO
+BTF_KIND_FUNC_PROTO
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 ``struct btf_type`` encoding requirement:
@@ -409,7 +413,7 @@ refers to parameter type.
 If the function has variable arguments, the last parameter is encoded with
 ``name_off = 0`` and ``type = 0``.
 
-2.2.14 BTF_KIND_VAR
+BTF_KIND_VAR
 ~~~~~~~~~~~~~~~~~~~
 
 ``struct btf_type`` encoding requirement:
@@ -439,7 +443,7 @@ The following is currently available:
 The latter is for future extraction of map key/value type id's from a
 map definition.
 
-2.2.15 BTF_KIND_DATASEC
+BTF_KIND_DATASEC
 ~~~~~~~~~~~~~~~~~~~~~~~
 
 ``struct btf_type`` encoding requirement:
@@ -464,7 +468,7 @@ map definition.
   * ``offset``: the in-section offset of the variable
   * ``size``: the size of the variable in bytes
 
-2.2.16 BTF_KIND_FLOAT
+BTF_KIND_FLOAT
 ~~~~~~~~~~~~~~~~~~~~~
 
 ``struct btf_type`` encoding requirement:
@@ -476,7 +480,7 @@ map definition.
 
 No additional type data follow ``btf_type``.
 
-2.2.17 BTF_KIND_DECL_TAG
+BTF_KIND_DECL_TAG
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 ``struct btf_type`` encoding requirement:
@@ -502,7 +506,7 @@ the attribute is applied to a ``struct``/``union`` member or
 a ``func`` argument, and ``btf_decl_tag.component_idx`` should be a
 valid index (starting from 0) pointing to a member or an argument.
 
-2.2.18 BTF_KIND_TYPE_TAG
+BTF_KIND_TYPE_TAG
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 ``struct btf_type`` encoding requirement:
@@ -525,7 +529,7 @@ type_tag, then zero or more const/volatile/restrict/typedef
 and finally the base type. The base type is one of
 int, ptr, array, struct, union, enum, func_proto and float types.
 
-2.2.19 BTF_KIND_ENUM64
+BTF_KIND_ENUM64
 ~~~~~~~~~~~~~~~~~~~~~~
 
 ``struct btf_type`` encoding requirement:
@@ -551,7 +555,7 @@ The ``btf_enum64`` encoding:
 If the original enum value is signed and the size is less than 8,
 that value will be sign extended into 8 bytes.
 
-3. BTF Kernel API
+BTF Kernel API
 =================
 
 The following bpf syscall command involves BTF:
@@ -594,14 +598,14 @@ The workflow typically looks like:
       pretty print types, dump func signatures and line info, etc.
 
 
-3.1 BPF_BTF_LOAD
+BPF_BTF_LOAD
 ----------------
 
 Load a blob of BTF data into kernel. A blob of data, described in
 :ref:`BTF_Type_String`, can be directly loaded into the kernel. A ``btf_fd``
 is returned to a userspace.
 
-3.2 BPF_MAP_CREATE
+BPF_MAP_CREATE
 ------------------
 
 A map can be created with ``btf_fd`` and specified key/value type id.::
@@ -625,7 +629,7 @@ them to BPF_MAP_CREATE attributes automatically.
 
 .. _BPF_Prog_Load:
 
-3.3 BPF_PROG_LOAD
+BPF_PROG_LOAD
 -----------------
 
 During prog_load, func_info and line_info can be passed to kernel with proper
@@ -675,7 +679,7 @@ For line_info, the line number and column number are defined as below:
     #define BPF_LINE_INFO_LINE_NUM(line_col)        ((line_col) >> 10)
     #define BPF_LINE_INFO_LINE_COL(line_col)        ((line_col) & 0x3ff)
 
-3.4 BPF_{PROG,MAP}_GET_NEXT_ID
+BPF_{PROG,MAP}_GET_NEXT_ID
 ------------------------------
 
 In kernel, every loaded program, map or btf has a unique id. The id won't
@@ -685,13 +689,13 @@ The bpf syscall command BPF_{PROG,MAP}_GET_NEXT_ID returns all id's, one for
 each command, to user space, for bpf program or maps, respectively, so an
 inspection tool can inspect all programs and maps.
 
-3.5 BPF_{PROG,MAP}_GET_FD_BY_ID
+BPF_{PROG,MAP}_GET_FD_BY_ID
 -------------------------------
 
 An introspection tool cannot use id to get details about program or maps.
 A file descriptor needs to be obtained first for reference-counting purpose.
 
-3.6 BPF_OBJ_GET_INFO_BY_FD
+BPF_OBJ_GET_INFO_BY_FD
 --------------------------
 
 Once a program/map fd is acquired, an introspection tool can get the detailed
@@ -700,7 +704,7 @@ example, ``bpf_map_info`` returns ``btf_id`` and key/value type ids.
 ``bpf_prog_info`` returns ``btf_id``, func_info, and line info for translated
 bpf byte codes, and jited_line_info.
 
-3.7 BPF_BTF_GET_FD_BY_ID
+BPF_BTF_GET_FD_BY_ID
 ------------------------
 
 With ``btf_id`` obtained in ``bpf_map_info`` and ``bpf_prog_info``, bpf
@@ -712,18 +716,18 @@ With the btf blob, ``bpf_map_info``, and ``bpf_prog_info``, an introspection
 tool has full btf knowledge and is able to pretty print map key/values, dump
 func signatures and line info, along with byte/jit codes.
 
-4. ELF File Format Interface
+ELF File Format Interface
 ============================
 
-4.1 .BTF section
+.BTF section
 ----------------
 
 The .BTF section contains type and string data. The format of this section is
-same as the one describe in :ref:`BTF_Type_String`.
+same as the one described in :ref:`BTF_Type_String`.
 
 .. _BTF_Ext_Section:
 
-4.2 .BTF.ext section
+.BTF.ext section
 --------------------
 
 The .BTF.ext section encodes func_info and line_info which needs loader
@@ -787,7 +791,7 @@ kernel API, the ``insn_off`` is the instruction offset in the unit of ``struct
 bpf_insn``. For ELF API, the ``insn_off`` is the byte offset from the
 beginning of section (``btf_ext_info_sec->sec_name_off``).
 
-4.2 .BTF_ids section
+.BTF_ids section
 --------------------
 
 The .BTF_ids section encodes BTF ID values that are used within the kernel.
@@ -848,10 +852,10 @@ and is used as a filter when resolving the BTF ID value.
 All the BTF ID lists and sets are compiled in the .BTF_ids section and
 resolved during the linking phase of kernel build by ``resolve_btfids`` tool.
 
-5. Using BTF
+Using BTF
 ============
 
-5.1 bpftool map pretty print
+bpftool map pretty print
 ----------------------------
 
 With BTF, the map key/value can be printed based on fields rather than simply
@@ -892,7 +896,7 @@ bpftool is able to pretty print like below:
         }
       ]
 
-5.2 bpftool prog dump
+bpftool prog dump
 ---------------------
 
 The following is an example showing how func_info and line_info can help prog
@@ -926,7 +930,7 @@ information.::
     ; counts = bpf_map_lookup_elem(&btf_map, &key);
     [...]
 
-5.3 Verifier Log
+Verifier Log
 ----------------
 
 The following is an example of how line_info can help debugging verification
@@ -952,7 +956,7 @@ failure.::
         invalid access to packet, off=0 size=4, R2(id=0,off=0,r=0)
         R2 offset is outside of the packet
 
-6. BTF Generation
+BTF Generation
 =================
 
 You need latest pahole
@@ -1059,7 +1063,7 @@ format.::
             .long   58
             .long   8206                    # Line 8 Col 14
 
-7. Testing
+Testing
 ==========
 
 Kernel bpf selftest `test_btf.c` provides extensive set of BTF-related tests.
