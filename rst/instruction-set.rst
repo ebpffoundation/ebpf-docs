@@ -7,6 +7,15 @@ eBPF Instruction Set Specification, v1.0
 
 This document specifies version 1.0 of the eBPF instruction set.
 
+The eBPF instruction set consists of eleven 64 bit registers, a program counter,
+and an implementation-specific amount (e.g., 512 bytes) of stack space.
+
+Documentation conventions
+=========================
+
+For brevity, this document uses the type notion "u64", "u32", etc.
+to mean an unsigned integer whose width is the specified number of bits,
+and "s32", etc. to mean a signed integer of the specified number of bits.
 
 Registers and calling convention
 ================================
@@ -21,33 +30,86 @@ The eBPF calling convention is defined as:
 * R6 - R9: callee saved registers that function calls will preserve
 * R10: read-only frame pointer to access stack
 
-R0 - R5 are scratch registers and eBPF programs needs to spill/fill them if
-necessary across calls.
+Registers R0 - R5 are caller-saved registers, meaning the BPF program needs to either
+spill them to the BPF stack or move them to callee saved registers if these
+arguments are to be reused across multiple function calls. Spilling means
+that the value in the register is moved to the BPF stack. The reverse operation
+of moving the variable from the BPF stack to the register is called filling.
+The reason for spilling/filling is due to the limited number of registers.
+
+Upon entering execution of an eBPF program, registers R1 - R5 initially can contain
+the input arguments for the program (similar to the argc/argv pair for a typical C program).
+The actual number of registers used, and their meaning, is defined by the program type;
+for example, a networking program might have an argument that includes network packet data
+and/or metadata.
 
 Instruction encoding
 ====================
 
+An eBPF program is a sequence of instructions.
+
 eBPF has two instruction encodings:
 
 * the basic instruction encoding, which uses 64 bits to encode an instruction
-* the wide instruction encoding, which appends a second 64-bit immediate value
-  (imm64) after the basic instruction for a total of 128 bits.
+* the wide instruction encoding, which appends a second 64-bit immediate (i.e.,
+  constant) value after the basic instruction for a total of 128 bits.
 
-The basic instruction encoding looks as follows:
+The basic instruction encoding is as follows, where MSB and LSB mean the most significant
+bits and least significant bits, respectively:
 
 =============  =======  ===============  ====================  ============
 32 bits (MSB)  16 bits  4 bits           4 bits                8 bits (LSB)
 =============  =======  ===============  ====================  ============
-immediate      offset   source register  destination register  opcode
+imm            offset   src              dst                   opcode
 =============  =======  ===============  ====================  ============
 
+imm
+  signed integer immediate value
+
+offset
+  signed integer offset used with pointer arithmetic
+
+src
+  the source register number (0-10), except where otherwise specified
+  (`64-bit immediate instructions`_ reuse this field for other purposes)
+
+dst
+  destination register number (0-10)
+
+opcode
+  operation to perform
+
 Note that most instructions do not use all of the fields.
-Unused fields shall be cleared to zero.
+Unused fields must be set to zero.
+
+As discussed below in `64-bit immediate instructions`_, a 64-bit immediate
+instruction uses a 64-bit immediate value that is constructed as follows.
+The 64 bits following the basic instruction contain a pseudo instruction
+using the same format but with opcode, dst, src, and offset all set to zero,
+and imm containing the high 32 bits of the immediate value.
+
+=================  ==================
+64 bits (MSB)      64 bits (LSB)
+=================  ==================
+basic instruction  pseudo instruction
+=================  ==================
+
+Thus the 64-bit immediate value is constructed as follows:
+
+  imm64 = imm + (next_imm << 32)
+
+where 'next_imm' refers to the imm value of the pseudo instruction
+following the basic instruction.
+
+In the remainder of this document 'src' and 'dst' refer to the values of the source
+and destination registers, respectively, rather than the register number.
 
 Instruction classes
 -------------------
 
-The three LSB bits of the 'opcode' field store the instruction class:
+The encoding of the 'opcode' field varies and can be determined from
+the three least significant bits (LSB) of the 'opcode' field which holds
+the "instruction class", as follows:
 
 =========  =====  ===============================  ===================================
 class      value  description                      reference
@@ -71,27 +133,33 @@ For arithmetic and jump instructions (``BPF_ALU``, ``BPF_ALU64``, ``BPF_JMP`` an
 ==============  ======  =================
 4 bits (MSB)    1 bit   3 bits (LSB)
 ==============  ======  =================
-operation code  source  instruction class
+code            source  instruction class
 ==============  ======  =================
 
-The 4th bit encodes the source operand:
+code
+  the operation code, whose meaning varies by instruction class
 
-  ======  =====  ========================================
+source
+  the source operand location, which unless otherwise specified is one of:
+
+  ======  =====  ==========================================
   source  value  description
-  ======  =====  ========================================
-  BPF_K   0x00   use 32-bit immediate as source operand
-  BPF_X   0x08   use 'src_reg' register as source operand
-  ======  =====  ========================================
+  ======  =====  ==========================================
+  BPF_K   0x00   use 32-bit 'imm' value as source operand
+  BPF_X   0x08   use 'src' register value as source operand
+  ======  =====  ==========================================
 
-The four MSB bits store the operation code.
-
+instruction class
+  the instruction class (see `Instruction classes`_)
 
 Arithmetic instructions
 -----------------------
 
-``BPF_ALU`` uses 32-bit wide operands while ``BPF_ALU64`` uses 64-bit wide operands for
+Instruction class ``BPF_ALU`` uses 32-bit wide operands (zeroing the upper 32 bits
+of the destination register) while ``BPF_ALU64`` uses 64-bit wide operands for
 otherwise identical operations.
-The 'code' field encodes the operation as below:
+
+The 4-bit 'code' field encodes the operation as follows:
 
 ========  =====  ==========================================================
 code      value  description
@@ -99,35 +167,52 @@ code      value  description
 BPF_ADD   0x00   dst += src
 BPF_SUB   0x10   dst -= src
 BPF_MUL   0x20   dst \*= src
-BPF_DIV   0x30   dst /= src
+BPF_DIV   0x30   dst = (src != 0) ? (dst / src) : 0
 BPF_OR    0x40   dst \|= src
 BPF_AND   0x50   dst &= src
 BPF_LSH   0x60   dst <<= src
 BPF_RSH   0x70   dst >>= src
 BPF_NEG   0x80   dst = ~src
-BPF_MOD   0x90   dst %= src
+BPF_MOD   0x90   dst = (src != 0) ? (dst % src) : dst
 BPF_XOR   0xa0   dst ^= src
 BPF_MOV   0xb0   dst = src
 BPF_ARSH  0xc0   sign extending shift right
 BPF_END   0xd0   byte swap operations (see `Byte swap instructions`_ below)
 ========  =====  ==========================================================
 
-``BPF_ADD | BPF_X | BPF_ALU`` means::
+where 'src' is the source operand value.
 
-  dst_reg = (u32) dst_reg + (u32) src_reg;
+Underflow and overflow are allowed during arithmetic operations,
+meaning the 64-bit or 32-bit value will wrap.  If
+eBPF program execution would result in division by zero,
+the destination register is instead set to zero.
+If execution would result in modulo by zero,
+the destination register is instead left unchanged.
 
-``BPF_ADD | BPF_X | BPF_ALU64`` means::
+Examples:
 
-  dst_reg = dst_reg + src_reg
+``BPF_ADD | BPF_X | BPF_ALU`` (0x0c) means::
 
-``BPF_XOR | BPF_K | BPF_ALU`` means::
+  dst = (u32) ((u32) dst + (u32) src)
 
-  src_reg = (u32) src_reg ^ (u32) imm32
+where '(u32)' indicates truncation to 32 bits.
 
-``BPF_XOR | BPF_K | BPF_ALU64`` means::
+``BPF_ADD | BPF_X | BPF_ALU64`` (0x0f) means::
 
-  src_reg = src_reg ^ imm32
+  dst = dst + src
 
+``BPF_XOR | BPF_K | BPF_ALU`` (0xa4) means::
+
+  src = (u32) src ^ (u32) imm
+
+``BPF_XOR | BPF_K | BPF_ALU64`` (0xa7) means::
+
+  src = src ^ imm
+
+Also note that the division and modulo operations are unsigned,
+where 'imm' is first sign extended to 64 bits and then converted
+to an unsigned 64-bit value.  There are no instructions for
+signed division or modulo.
 
 Byte swap instructions
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -138,8 +223,9 @@ The byte swap instructions use an instruction class of ``BPF_ALU`` and a 4-bit
 The byte swap instructions operate on the destination register
 only and do not use a separate source register or immediate value.
 
-The 1-bit source operand field in the opcode is used to to select what byte
-order the operation convert from or to:
+Byte swap instructions use the 1-bit 'source' field in the 'opcode' field
+as follows.  Instead of indicating the source operator, it is instead
+used to select what byte order the operation converts from or to:
 
 =========  =====  =================================================
 source     value  description
@@ -149,47 +235,86 @@ BPF_TO_BE  0x08   convert between host byte order and big endian
 =========  =====  =================================================
 
 The 'imm' field encodes the width of the swap operations.  The following widths
-are supported: 16, 32 and 64.
+are supported: 16, 32 and 64. The following table summarizes the resulting
+possibilities:
 
-Examples:
+=============================  =========  ===  ========  ==================
+opcode construction            opcode     imm  mnemonic  pseudocode
+=============================  =========  ===  ========  ==================
+BPF_END | BPF_TO_LE | BPF_ALU  0xd4       16   le16 dst  dst = htole16(dst)
+BPF_END | BPF_TO_LE | BPF_ALU  0xd4       32   le32 dst  dst = htole32(dst)
+BPF_END | BPF_TO_LE | BPF_ALU  0xd4       64   le64 dst  dst = htole64(dst)
+BPF_END | BPF_TO_BE | BPF_ALU  0xdc       16   be16 dst  dst = htobe16(dst)
+BPF_END | BPF_TO_BE | BPF_ALU  0xdc       32   be32 dst  dst = htobe32(dst)
+BPF_END | BPF_TO_BE | BPF_ALU  0xdc       64   be64 dst  dst = htobe64(dst)
+=============================  =========  ===  ========  ==================
 
-``BPF_ALU | BPF_TO_LE | BPF_END`` with imm = 16 means::
+where
 
-  dst_reg = htole16(dst_reg)
-
-``BPF_ALU | BPF_TO_BE | BPF_END`` with imm = 64 means::
-
-  dst_reg = htobe64(dst_reg)
+* mnenomic indicates a short form that might be displayed by some tools such as disassemblers
+* 'htoleNN()' indicates converting a NN-bit value from host byte order to little-endian byte order
+* 'htobeNN()' indicates converting a NN-bit value from host byte order to big-endian byte order
 
 Jump instructions
 -----------------
 
-``BPF_JMP32`` uses 32-bit wide operands while ``BPF_JMP`` uses 64-bit wide operands for
+Instruction class ``BPF_JMP32`` uses 32-bit wide operands while ``BPF_JMP`` uses 64-bit wide operands for
 otherwise identical operations.
-The 'code' field encodes the operation as below:
 
-========  =====  =========================  ============
-code      value  description                notes
-========  =====  =========================  ============
-BPF_JA    0x00   PC += off                  BPF_JMP only
-BPF_JEQ   0x10   PC += off if dst == src
-BPF_JGT   0x20   PC += off if dst > src     unsigned
-BPF_JGE   0x30   PC += off if dst >= src    unsigned
-BPF_JSET  0x40   PC += off if dst & src
-BPF_JNE   0x50   PC += off if dst != src
-BPF_JSGT  0x60   PC += off if dst > src     signed
-BPF_JSGE  0x70   PC += off if dst >= src    signed
-BPF_CALL  0x80   function call
-BPF_EXIT  0x90   function / program return  BPF_JMP only
-BPF_JLT   0xa0   PC += off if dst < src     unsigned
-BPF_JLE   0xb0   PC += off if dst <= src    unsigned
-BPF_JSLT  0xc0   PC += off if dst < src     signed
-BPF_JSLE  0xd0   PC += off if dst <= src    signed
-========  =====  =========================  ============
+The 4-bit 'code' field encodes the operation as below, where PC is the program counter:
 
-The eBPF program needs to store the return value into register R0 before doing a
-BPF_EXIT.
+========  =====  ===  ==========================  ========================
+code      value  src  description                 notes
+========  =====  ===  ==========================  ========================
+BPF_JA    0x0    0x0  PC += offset                BPF_JMP only
+BPF_JEQ   0x1    any  PC += offset if dst == src
+BPF_JGT   0x2    any  PC += offset if dst > src   unsigned
+BPF_JGE   0x3    any  PC += offset if dst >= src  unsigned
+BPF_JSET  0x4    any  PC += offset if dst & src
+BPF_JNE   0x5    any  PC += offset if dst != src
+BPF_JSGT  0x6    any  PC += offset if dst > src   signed
+BPF_JSGE  0x7    any  PC += offset if dst >= src  signed
+BPF_CALL  0x8    0x0  call helper function imm    see `Helper functions`_
+BPF_CALL  0x8    0x1  call PC += offset           see `eBPF functions`_
+BPF_CALL  0x8    0x2  call runtime function imm   see `Runtime functions`_
+BPF_EXIT  0x9    0x0  return                      BPF_JMP only
+BPF_JLT   0xa    any  PC += offset if dst < src   unsigned
+BPF_JLE   0xb    any  PC += offset if dst <= src  unsigned
+BPF_JSLT  0xc    any  PC += offset if dst < src   signed
+BPF_JSLE  0xd    any  PC += offset if dst <= src  signed
+========  =====  ===  ==========================  ========================
 
+Helper functions
+~~~~~~~~~~~~~~~~
+Helper functions are a concept whereby BPF programs can call into a
+set of function calls exposed by the eBPF runtime.  Each helper
+function is identified by an integer used in a ``BPF_CALL`` instruction.
+The available helper functions may differ for each eBPF program type.
+
+Conceptually, each helper function is implemented with a commonly shared function
+signature defined as:
+
+  u64 function(u64 r1, u64 r2, u64 r3, u64 r4, u64 r5)
+
+In actuality, each helper function is defined as taking between 0 and 5 arguments,
+with the remaining registers being ignored.  The definition of a helper function
+is responsible for specifying the type (e.g., integer, pointer, etc.) of the value returned,
+the number of arguments, and the type of each argument.
+
+Note that ``BPF_CALL | BPF_X | BPF_JMP`` (0x8d), where the helper function integer
+would be read from a specified register, is reserved and currently not permitted.
+
+Runtime functions
+~~~~~~~~~~~~~~~~~
+Runtime functions are like helper functions except that they are not specific
+to eBPF programs.  They use a different numbering space from helper functions,
+but otherwise the same considerations apply.
+
+eBPF functions
+~~~~~~~~~~~~~~
+eBPF functions are functions exposed by the same eBPF program as the caller,
+and are referenced by offset from the call instruction, similar to ``BPF_JA``.
+A ``BPF_EXIT`` within the eBPF function will return to the caller.
 
 Load and store instructions
 ===========================
@@ -203,7 +328,8 @@ For load and store instructions (``BPF_LD``, ``BPF_LDX``, ``BPF_ST``, and ``BPF_
 mode          size    instruction class
 ============  ======  =================
 
-The mode modifier is one of:
+mode
+  one of:
 
   =============  =====  ====================================  =============
   mode modifier  value  description                           reference
@@ -215,7 +341,8 @@ The mode modifier is one of:
   BPF_ATOMIC     0xc0   atomic operations                     `Atomic operations`_
   =============  =====  ====================================  =============
 
-The size modifier is one of:
+size
+  one of:
 
   =============  =====  =====================
   size modifier  value  description
@@ -226,6 +353,9 @@ The size modifier is one of:
   BPF_DW         0x18   double word (8 bytes)
   =============  =====  =====================
 
+instruction class
+  the instruction class (see `Instruction classes`_)
+
 Regular load and store operations
 ---------------------------------
 
@@ -234,17 +364,17 @@ instructions that transfer data between a register and memory.
 
 ``BPF_MEM | <size> | BPF_STX`` means::
 
-  *(size *) (dst_reg + off) = src_reg
+  *(size *) (dst + offset) = src_reg
 
 ``BPF_MEM | <size> | BPF_ST`` means::
 
-  *(size *) (dst_reg + off) = imm32
+  *(size *) (dst + offset) = imm32
 
 ``BPF_MEM | <size> | BPF_LDX`` means::
 
-  dst_reg = *(size *) (src_reg + off)
+  dst = *(size *) (src + offset)
 
-Where size is one of: ``BPF_B``, ``BPF_H``, ``BPF_W``, or ``BPF_DW``.
+where size is one of: ``BPF_B``, ``BPF_H``, ``BPF_W``, or ``BPF_DW``.
 
 Atomic operations
 -----------------
@@ -256,9 +386,11 @@ by other eBPF programs or means outside of this specification.
 All atomic operations supported by eBPF are encoded as store operations
 that use the ``BPF_ATOMIC`` mode modifier as follows:
 
-* ``BPF_ATOMIC | BPF_W | BPF_STX`` for 32-bit operations
-* ``BPF_ATOMIC | BPF_DW | BPF_STX`` for 64-bit operations
-* 8-bit and 16-bit wide atomic operations are not supported.
+* ``BPF_ATOMIC | BPF_W | BPF_STX`` (0xc3) for 32-bit operations
+* ``BPF_ATOMIC | BPF_DW | BPF_STX`` (0xdb) for 64-bit operations
+
+Note that 8-bit (``BPF_B``) and 16-bit (``BPF_H``) wide atomic operations are not supported,
+nor is ``BPF_ATOMIC | <size> | BPF_ST``.
 
 The 'imm' field is used to encode the actual atomic operation.
 Simple atomic operation use a subset of the values defined to encode
@@ -273,16 +405,15 @@ BPF_AND   0x50   atomic and
 BPF_XOR   0xa0   atomic xor
 ========  =====  ===========
 
+``BPF_ATOMIC | BPF_W  | BPF_STX`` (0xc3) with 'imm' = BPF_ADD means::
 
-``BPF_ATOMIC | BPF_W  | BPF_STX`` with 'imm' = BPF_ADD means::
+  *(u32 *)(dst + offset) += src
 
-  *(u32 *)(dst_reg + off16) += src_reg
+``BPF_ATOMIC | BPF_DW | BPF_STX`` (0xdb) with 'imm' = BPF ADD means::
 
-``BPF_ATOMIC | BPF_DW | BPF_STX`` with 'imm' = BPF ADD means::
+  *(u64 *)(dst + offset) += src
 
-  *(u64 *)(dst_reg + off16) += src_reg
-
-In addition to the simple atomic operations, there also is a modifier and
+In addition to the simple atomic operations above, there also is a modifier and
 two complex atomic operations:
 
 ===========  ================  ===========================
@@ -295,30 +426,70 @@ BPF_CMPXCHG  0xf0 | BPF_FETCH  atomic compare and exchange
 
 The ``BPF_FETCH`` modifier is optional for simple atomic operations, and
 always set for the complex atomic operations.  If the ``BPF_FETCH`` flag
-is set, then the operation also overwrites ``src_reg`` with the value that
+is set, then the operation also overwrites ``src`` with the value that
 was in memory before it was modified.
 
-The ``BPF_XCHG`` operation atomically exchanges ``src_reg`` with the value
-addressed by ``dst_reg + off``.
+The ``BPF_XCHG`` operation atomically exchanges ``src`` with the value
+addressed by ``dst + offset``.
 
 The ``BPF_CMPXCHG`` operation atomically compares the value addressed by
-``dst_reg + off`` with ``R0``. If they match, the value addressed by
-``dst_reg + off`` is replaced with ``src_reg``. In either case, the
-value that was at ``dst_reg + off`` before the operation is zero-extended
+``dst + offset`` with ``R0``. If they match, the value addressed by
+``dst + offset`` is replaced with ``src``. In either case, the
+value that was at ``dst + offset`` before the operation is zero-extended
 and loaded back to ``R0``.
 
 64-bit immediate instructions
 -----------------------------
 
 Instructions with the ``BPF_IMM`` 'mode' modifier use the wide instruction
-encoding for an extra imm64 value.
+encoding defined in `Instruction encoding`_, and use the 'src' field of the
+basic instruction to hold an opcode subtype.
 
-There is currently only one such instruction.
+The following instructions are defined, and use additional concepts defined below:
 
-``BPF_LD | BPF_DW | BPF_IMM`` means::
+=========================  ======  ===  =====================================  ===========  ==============
+opcode construction        opcode  src  pseudocode                             imm type     dst type
+=========================  ======  ===  =====================================  ===========  ==============
+BPF_IMM | BPF_DW | BPF_LD  0x18    0x0  dst = imm64                            integer      integer
+BPF_IMM | BPF_DW | BPF_LD  0x18    0x1  dst = map_by_fd(imm)                   map fd       map
+BPF_IMM | BPF_DW | BPF_LD  0x18    0x2  dst = mva(map_by_fd(imm)) + next_imm   map fd       data pointer
+BPF_IMM | BPF_DW | BPF_LD  0x18    0x3  dst = variable_addr(imm)               variable id  data pointer
+BPF_IMM | BPF_DW | BPF_LD  0x18    0x4  dst = code_addr(imm)                   integer      code pointer
+BPF_IMM | BPF_DW | BPF_LD  0x18    0x5  dst = map_by_idx(imm)                  map index    map
+BPF_IMM | BPF_DW | BPF_LD  0x18    0x6  dst = mva(map_by_idx(imm)) + next_imm  map index    data pointer
+=========================  ======  ===  =====================================  ===========  ==============
 
-  dst_reg = imm64
+where
 
+* map_by_fd(fd) means to convert a 32-bit POSIX file descriptor into an address of a map object (see `Map objects`_)
+* map_by_index(index) means to convert a 32-bit index into an address of a map object
+* mva(map) gets the address of the first value in a given map object
+* variable_addr(id) gets the address of a variable (see `Variables`_) with a given id
+* code_addr(offset) gets the address of the instruction at a specified relative offset in units of 64-bit blocks
+* the 'imm type' can be used by disassemblers for display
+* the 'dst type' can be used for verification and JIT compilation purposes
+
+Map objects
+~~~~~~~~~~~
+
+Maps are shared memory regions accessible by eBPF programs on some platforms, where we use the term "map object"
+to refer to an object containing the data and metadata (e.g., size) about the memory region.
+A map can have various semantics as defined in a separate document, and may or may not have a single
+contiguous memory region, but the 'mva(map)' is currently only defined for maps that do have a single
+contiguous memory region.  Support for maps is optional.
+
+Each map object can have a POSIX file descriptor (fd) if supported by the platform,
+where 'map_by_fd(fd)' means to get the map with the specified file descriptor.
+Each eBPF program can also be defined to use a set of maps associated with the program
+at load time, and 'map_by_index(index)' means to get the map with the given index in the set
+associated with the eBPF program containing the instruction.
+
+Variables
+~~~~~~~~~
+
+Variables are memory regions, identified by integer ids, accessible by eBPF programs on
+some platforms.  The 'variable_addr(id)' operation means to get the address of the memory region
+identified by the given id.  Support for such variables is optional.
 
 Legacy BPF Packet access instructions
 -------------------------------------
@@ -326,3 +497,208 @@ Legacy BPF Packet access instructions
 eBPF previously introduced special instructions for access to packet data that were
 carried over from classic BPF. However, these instructions are
 deprecated and should no longer be used.
+
+Appendix
+========
+
+For reference, the following table lists opcodes in order by value.
+
+======  ===  ====  ===================================================  ========================================
+opcode  src  imm   description                                          reference
+======  ===  ====  ===================================================  ========================================
+0x00    0x0  any   (additional immediate value)                         `64-bit immediate instructions`_
+0x04    0x0  any   dst = (u32)((u32)dst + (u32)imm)                     `Arithmetic instructions`_
+0x05    0x0  0x00  goto +offset                                         `Jump instructions`_
+0x07    0x0  any   dst += imm                                           `Arithmetic instructions`_
+0x0c    any  0x00  dst = (u32)((u32)dst + (u32)src)                     `Arithmetic instructions`_
+0x0f    any  0x00  dst += src                                           `Arithmetic instructions`_
+0x14    0x0  any   dst = (u32)((u32)dst - (u32)imm)                     `Arithmetic instructions`_
+0x15    0x0  any   if dst == imm goto +offset                           `Jump instructions`_
+0x16    0x0  any   if (u32)dst == imm goto +offset                      `Jump instructions`_
+0x17    0x0  any   dst -= imm                                           `Arithmetic instructions`_
+0x18    0x0  any   dst = imm64                                          `64-bit immediate instructions`_
+0x18    0x1  any   dst = map_by_fd(imm)                                 `64-bit immediate instructions`_
+0x18    0x2  any   dst = mva(map_by_fd(imm)) + next_imm                 `64-bit immediate instructions`_
+0x18    0x3  any   dst = variable_addr(imm)                             `64-bit immediate instructions`_
+0x18    0x4  any   dst = code_addr(imm)                                 `64-bit immediate instructions`_
+0x18    0x5  any   dst = map_by_idx(imm)                                `64-bit immediate instructions`_
+0x18    0x6  any   dst = mva(map_by_idx(imm)) + next_imm                `64-bit immediate instructions`_
+0x1c    any  0x00  dst = (u32)((u32)dst - (u32)src)                     `Arithmetic instructions`_
+0x1d    any  0x00  if dst == src goto +offset                           `Jump instructions`_
+0x1e    any  0x00  if (u32)dst == (u32)src goto +offset                 `Jump instructions`_
+0x1f    any  0x00  dst -= src                                           `Arithmetic instructions`_
+0x20    any  any   (deprecated, implementation-specific)                `Legacy BPF Packet access instructions`_
+0x24    0x0  any   dst = (u32)(dst \* imm)                              `Arithmetic instructions`_
+0x25    0x0  any   if dst > imm goto +offset                            `Jump instructions`_
+0x26    0x0  any   if (u32)dst > imm goto +offset                       `Jump instructions`_
+0x27    0x0  any   dst \*= imm                                          `Arithmetic instructions`_
+0x28    any  any   (deprecated, implementation-specific)                `Legacy BPF Packet access instructions`_
+0x2c    any  0x00  dst = (u32)(dst \* src)                              `Arithmetic instructions`_
+0x2d    any  0x00  if dst > src goto +offset                            `Jump instructions`_
+0x2e    any  0x00  if (u32)dst > (u32)src goto +offset                  `Jump instructions`_
+0x2f    any  0x00  dst \*= src                                          `Arithmetic instructions`_
+0x30    any  any   (deprecated, implementation-specific)                `Legacy BPF Packet access instructions`_
+0x34    0x0  any   dst = (u32)((imm != 0) ? (dst / imm) : 0)            `Arithmetic instructions`_
+0x35    0x0  any   if dst >= imm goto +offset                           `Jump instructions`_
+0x36    0x0  any   if (u32)dst >= imm goto +offset                      `Jump instructions`_
+0x37    0x0  any   dst = (imm != 0) ? (dst / imm) : 0                   `Arithmetic instructions`_
+0x38    any  any   (deprecated, implementation-specific)                `Legacy BPF Packet access instructions`_
+0x3c    any  0x00  dst = (u32)((imm != 0) ? (dst / src) : 0)            `Arithmetic instructions`_
+0x3d    any  0x00  if dst >= src goto +offset                           `Jump instructions`_
+0x3e    any  0x00  if (u32)dst >= (u32)src goto +offset                 `Jump instructions`_
+0x3f    any  0x00  dst = (src !+ 0) ? (dst / src) : 0                   `Arithmetic instructions`_
+0x40    any  any   (deprecated, implementation-specific)                `Legacy BPF Packet access instructions`_
+0x44    0x0  any   dst = (u32)(dst \| imm)                              `Arithmetic instructions`_
+0x45    0x0  any   if dst & imm goto +offset                            `Jump instructions`_
+0x46    0x0  any   if (u32)dst & imm goto +offset                       `Jump instructions`_
+0x47    0x0  any   dst \|= imm                                          `Arithmetic instructions`_
+0x48    any  any   (deprecated, implementation-specific)                `Legacy BPF Packet access instructions`_
+0x4c    any  0x00  dst = (u32)(dst \| src)                              `Arithmetic instructions`_
+0x4d    any  0x00  if dst & src goto +offset                            `Jump instructions`_
+0x4e    any  0x00  if (u32)dst & (u32)src goto +offset                  `Jump instructions`_
+0x4f    any  0x00  dst \|= src                                          `Arithmetic instructions`_
+0x50    any  any   (deprecated, implementation-specific)                `Legacy BPF Packet access instructions`_
+0x54    0x0  any   dst = (u32)(dst & imm)                               `Arithmetic instructions`_
+0x55    0x0  any   if dst != imm goto +offset                           `Jump instructions`_
+0x56    0x0  any   if (u32)dst != imm goto +offset                      `Jump instructions`_
+0x57    0x0  any   dst &= imm                                           `Arithmetic instructions`_
+0x58    any  any   (deprecated, implementation-specific)                `Legacy BPF Packet access instructions`_
+0x5c    any  0x00  dst = (u32)(dst & src)                               `Arithmetic instructions`_
+0x5d    any  0x00  if dst != src goto +offset                           `Jump instructions`_
+0x5e    any  0x00  if (u32)dst != (u32)src goto +offset                 `Jump instructions`_
+0x5f    any  0x00  dst &= src                                           `Arithmetic instructions`_
+0x61    any  0x00  dst = \*(u32 \*)(src + offset)                       `Load and store instructions`_
+0x62    0x0  any   \*(u32 \*)(dst + offset) = imm                       `Load and store instructions`_
+0x63    any  0x00  \*(u32 \*)(dst + offset) = src                       `Load and store instructions`_
+0x64    0x0  any   dst = (u32)(dst << imm)                              `Arithmetic instructions`_
+0x65    0x0  any   if dst s> imm goto +offset                           `Jump instructions`_
+0x66    0x0  any   if (s32)dst s> (s32)imm goto +offset                 `Jump instructions`_
+0x67    0x0  any   dst <<= imm                                          `Arithmetic instructions`_
+0x69    any  0x00  dst = \*(u16 \*)(src + offset)                       `Load and store instructions`_
+0x6a    0x0  any   \*(u16 \*)(dst + offset) = imm                       `Load and store instructions`_
+0x6b    any  0x00  \*(u16 \*)(dst + offset) = src                       `Load and store instructions`_
+0x6c    any  0x00  dst = (u32)(dst << src)                              `Arithmetic instructions`_
+0x6d    any  0x00  if dst s> src goto +offset                           `Jump instructions`_
+0x6e    any  0x00  if (s32)dst s> (s32)src goto +offset                 `Jump instructions`_
+0x6f    any  0x00  dst <<= src                                          `Arithmetic instructions`_
+0x71    any  0x00  dst = \*(u8 \*)(src + offset)                        `Load and store instructions`_
+0x72    0x0  any   \*(u8 \*)(dst + offset) = imm                        `Load and store instructions`_
+0x73    any  0x00  \*(u8 \*)(dst + offset) = src                        `Load and store instructions`_
+0x74    0x0  any   dst = (u32)(dst >> imm)                              `Arithmetic instructions`_
+0x75    0x0  any   if dst s>= imm goto +offset                          `Jump instructions`_
+0x76    0x0  any   if (s32)dst s>= (s32)imm goto +offset                `Jump instructions`_
+0x77    0x0  any   dst >>= imm                                          `Arithmetic instructions`_
+0x79    any  0x00  dst = \*(u64 \*)(src + offset)                       `Load and store instructions`_
+0x7a    0x0  any   \*(u64 \*)(dst + offset) = imm                       `Load and store instructions`_
+0x7b    any  0x00  \*(u64 \*)(dst + offset) = src                       `Load and store instructions`_
+0x7c    any  0x00  dst = (u32)(dst >> src)                              `Arithmetic instructions`_
+0x7d    any  0x00  if dst s>= src goto +offset                          `Jump instructions`_
+0x7e    any  0x00  if (s32)dst s>= (s32)src goto +offset                `Jump instructions`_
+0x7f    any  0x00  dst >>= src                                          `Arithmetic instructions`_
+0x84    0x0  0x00  dst = (u32)-dst                                      `Arithmetic instructions`_
+0x85    0x0  any   call helper function imm                             `Helper functions`_
+0x85    0x1  any   call PC += offset                                    `eBPF functions`_
+0x85    0x2  any   call runtime function imm                            `Runtime functions`_
+0x87    0x0  0x00  dst = -dst                                           `Arithmetic instructions`_
+0x94    0x0  any   dst = (u32)((imm != 0) ? (dst % imm) : dst)          `Arithmetic instructions`_
+0x95    0x0  0x00  return                                               `Jump instructions`_
+0x97    0x0  any   dst = (imm != 0) ? (dst % imm) : dst                 `Arithmetic instructions`_
+0x9c    any  0x00  dst = (u32)((src != 0) ? (dst % src) : dst)          `Arithmetic instructions`_
+0x9f    any  0x00  dst = (src != 0) ? (dst % src) : dst                 `Arithmetic instructions`_
+0xa4    0x0  any   dst = (u32)(dst ^ imm)                               `Arithmetic instructions`_
+0xa5    0x0  any   if dst < imm goto +offset                            `Jump instructions`_
+0xa6    0x0  any   if (u32)dst < imm goto +offset                       `Jump instructions`_
+0xa7    0x0  any   dst ^= imm                                           `Arithmetic instructions`_
+0xac    any  0x00  dst = (u32)(dst ^ src)                               `Arithmetic instructions`_
+0xad    any  0x00  if dst < src goto +offset                            `Jump instructions`_
+0xae    any  0x00  if (u32)dst < (u32)src goto +offset                  `Jump instructions`_
+0xaf    any  0x00  dst ^= src                                           `Arithmetic instructions`_
+0xb4    0x0  any   dst = (u32) imm                                      `Arithmetic instructions`_
+0xb5    0x0  any   if dst <= imm goto +offset                           `Jump instructions`_
+0xa6    0x0  any   if (u32)dst <= imm goto +offset                      `Jump instructions`_
+0xb7    0x0  any   dst = imm                                            `Arithmetic instructions`_
+0xbc    any  0x00  dst = (u32) src                                      `Arithmetic instructions`_
+0xbd    any  0x00  if dst <= src goto +offset                           `Jump instructions`_
+0xbe    any  0x00  if (u32)dst <= (u32)src goto +offset                 `Jump instructions`_
+0xbf    any  0x00  dst = src                                            `Arithmetic instructions`_
+0xc3    any  0x00  lock \*(u32 \*)(dst + offset) += src                 `Atomic operations`_
+0xc3    any  0x01  lock::                                               `Atomic operations`_
+
+                       *(u32 *)(dst + offset) += src
+                       src = *(u32 *)(dst + offset)
+0xc3    any  0x40  \*(u32 \*)(dst + offset) \|= src                     `Atomic operations`_
+0xc3    any  0x41  lock::                                               `Atomic operations`_
+
+                       *(u32 *)(dst + offset) |= src
+                       src = *(u32 *)(dst + offset)
+0xc3    any  0x50  \*(u32 \*)(dst + offset) &= src                      `Atomic operations`_
+0xc3    any  0x51  lock::                                               `Atomic operations`_
+
+                       *(u32 *)(dst + offset) &= src
+                       src = *(u32 *)(dst + offset)
+0xc3    any  0xa0  \*(u32 \*)(dst + offset) ^= src                      `Atomic operations`_
+0xc3    any  0xa1  lock::                                               `Atomic operations`_
+
+                       *(u32 *)(dst + offset) ^= src
+                       src = *(u32 *)(dst + offset)
+0xc3    any  0xe1  lock::                                               `Atomic operations`_
+
+                       temp = *(u32 *)(dst + offset)
+                       *(u32 *)(dst + offset) = src
+                       src = temp
+0xc3    any  0xf1  lock::                                               `Atomic operations`_
+
+                       temp = *(u32 *)(dst + offset)
+                       if *(u32)(dst + offset) == R0
+                          *(u32)(dst + offset) = src
+                       R0 = temp
+0xc4    0x0  any   dst = (u32)(dst s>> imm)                             `Arithmetic instructions`_
+0xc5    0x0  any   if dst s< imm goto +offset                           `Jump instructions`_
+0xc6    0x0  any   if (s32)dst s< (s32)imm goto +offset                 `Jump instructions`_
+0xc7    0x0  any   dst s>>= imm                                         `Arithmetic instructions`_
+0xcc    any  0x00  dst = (u32)(dst s>> src)                             `Arithmetic instructions`_
+0xcd    any  0x00  if dst s< src goto +offset                           `Jump instructions`_
+0xce    any  0x00  if (s32)dst s< (s32)src goto +offset                 `Jump instructions`_
+0xcf    any  0x00  dst s>>= src                                         `Arithmetic instructions`_
+0xd4    0x0  0x10  dst = htole16(dst)                                   `Byte swap instructions`_
+0xd4    0x0  0x20  dst = htole32(dst)                                   `Byte swap instructions`_
+0xd4    0x0  0x40  dst = htole64(dst)                                   `Byte swap instructions`_
+0xd5    0x0  any   if dst s<= imm goto +offset                          `Jump instructions`_
+0xd6    0x0  any   if (s32)dst s<= (s32)imm goto +offset                `Jump instructions`_
+0xdb    any  0x00  lock \*(u64 \*)(dst + offset) += src                 `Atomic operations`_
+0xdb    any  0x01  lock::                                               `Atomic operations`_
+
+                       *(u64 *)(dst + offset) += src
+                       src = *(u64 *)(dst + offset)
+0xdb    any  0x40  \*(u64 \*)(dst + offset) \|= src                     `Atomic operations`_
+0xdb    any  0x41  lock::                                               `Atomic operations`_
+
+                       *(u64 *)(dst + offset) |= src
+                       lock src = *(u64 *)(dst + offset)
+0xdb    any  0x50  \*(u64 \*)(dst + offset) &= src                      `Atomic operations`_
+0xdb    any  0x51  lock::                                               `Atomic operations`_
+
+                       *(u64 *)(dst + offset) &= src
+                       src = *(u64 *)(dst + offset)
+0xdb    any  0xa0  \*(u64 \*)(dst + offset) ^= src                      `Atomic operations`_
+0xdb    any  0xa1  lock::                                               `Atomic operations`_
+
+                       *(u64 *)(dst + offset) ^= src
+                       src = *(u64 *)(dst + offset)
+0xdb    any  0xe1  lock::                                               `Atomic operations`_
+
+                       temp = *(u64 *)(dst + offset)
+                       *(u64 *)(dst + offset) = src
+                       src = temp
+0xdb    any  0xf1  lock::                                               `Atomic operations`_
+
+                       temp = *(u64 *)(dst + offset)
+                       if *(u64)(dst + offset) == R0
+                          *(u64)(dst + offset) = src
+                       R0 = temp
+0xdc    0x0  0x10  dst = htobe16(dst)                                   `Byte swap instructions`_
+0xdc    0x0  0x20  dst = htobe32(dst)                                   `Byte swap instructions`_
+0xdc    0x0  0x40  dst = htobe64(dst)                                   `Byte swap instructions`_
+0xdd    any  0x00  if dst s<= src goto +offset                          `Jump instructions`_
+0xde    any  0x00  if (s32)dst s<= (s32)src goto +offset                `Jump instructions`_
+======  ===  ====  ===================================================  ========================================
